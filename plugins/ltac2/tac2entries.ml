@@ -910,6 +910,9 @@ let check_levels st used_levels =
   in
   Tac2Custom.Map.iter iter used_levels
 
+let hack_table_entry : (Names.KerName.t, _ Procq.Entry.t) Hashtbl.t = Hashtbl.create 23
+let find_hack_table_entry = Hashtbl.find_opt hack_table_entry
+
 let perform_notation syn st =
   let tok = syn.synext_tok in
   let used = syn.synext_used in
@@ -938,7 +941,15 @@ let perform_notation syn st =
   in
   let entry = match entry with
     | None -> Pltac.ltac2_expr
-    | Some entry -> find_custom_entry entry
+    | Some entry ->
+      (* find_custom_entry entry *)
+      match find_custom_entry entry with
+      | entry -> entry
+      | exception Not_found ->
+        match find_hack_table_entry entry with
+        | Some entry -> entry
+        | None ->
+          CErrors.user_err Pp.(str "Unknown Ltac2 custom entry " ++ KerName.print entry ++ str".")
   in
   [Procq.ExtendRule (entry, rule)], st
 
@@ -1081,6 +1092,15 @@ let warn_deprecated_notation_for_abbreviation =
 
 let tactic_qualid = qualid_of_ident (Id.of_string "tactic")
 
+(* TODO: Add to Ltac2 manual *)
+let { Goptions.get = get_default_ltac2_entry } = Goptions.declare_stringopt_option_and_ref
+    ~stage:Synterp ~key:["Ltac2"; "Default"; "Notation"; "Entry"]
+    ~value:None ()
+
+let { Goptions.get = get_default_ltac2_entry_level } = Goptions.declare_intopt_option_and_ref
+    ~stage:Synterp ~key:["Ltac2"; "Default"; "Notation"; "Entry"; "Level"]
+    ~value:None ()
+
 let register_notation atts tkn (entry,lev) body =
   match tkn, entry, lev with
   | [SexprRec (_, {loc;v=Some id}, [])], None, None ->
@@ -1106,13 +1126,19 @@ let register_notation atts tkn (entry,lev) body =
           try Some (CustomTab.locate entry)
           with Not_found -> CErrors.user_err Pp.(str "Unknown entry " ++ pr_qualid entry ++ str ".")
         end
-      | None -> None
+      | None ->
+        None
+        (* XXX *)
+        (* Option.map Libnames.qualid_of_string (get_default_ltac2_entry ()) *)
     in
     (* Globalize so that names are absolute *)
     let lev = if Option.has_some entry then
         let lev = match lev with
           | Some lev -> lev
-          | None -> user_err (str "Custom entry level must be explicit.")
+          | None ->
+            (match get_default_ltac2_entry_level () with
+                 | Some lev -> lev
+                 | None -> user_err (str "Custom entry level must be explicit."))
         in
         let () = if lev < 0 then user_err (str "Custom entry levels must be nonnegative.") in
         lev
